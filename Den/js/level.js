@@ -3397,55 +3397,37 @@ const level = {
         powerUps.addResearchToLevel() //needs to run after mobs are spawned
     },
     den() {
-        // add the machine learning library.
-        // const script = document.createElement('script')
-        // script.defer = true
-        // script.src = "https://unpkg.com/brain.js"
-        // document.head.appendChild(script)
-        // actual level stuff
         m.health = 1
         level.difficultyIncrease(20)
         b.giveGuns()
+        for (let i = 0; i < 40; i++) {
+            powerUps.spawn(m.pos.x + 1000, m.pos.y, 'ammo')
+        }
         const aimerBoss = (x, y, radius = 90) => {
             // utils
             const lerp = (start, end, step) => {
                 return (1 - step) * start + step * end
             }
-            // described ChatGPT to create an extrapolation function...
-            const extrapolate = (points, factor) => {
-                const numPoints = points.length
-                let xSum = 0, ySum = 0, xySum = 0, xSquaredSum = 0
-              
-                for (const point of points) {
-                    xSum += point.x
-                    ySum += point.y
-                    xySum += point.x * point.y
-                    xSquaredSum += point.x ** 2
+            const sliceArray = (array, endIndex, amount) => {
+                // slices the array from endIndex (disclusive), backwards amount items.
+                // this assumes the total amount to copy isn't larger than the existing amount.
+                // an implementation like that would be much more difficult and would require looping.
+                if (endIndex - amount >= 0) {
+                    // no wrap around needed at all
+                    return array.slice(endIndex - amount, endIndex)
                 }
-              
-                const slope = xSquaredSum ? (numPoints * xySum - xSum * ySum) / (numPoints * xSquaredSum - xSum ** 2) : Infinity
-              
-                const lastPoint = points[points.length - 1], secondToLastPoint = points[points.length - 2] || { x: lastPoint.x, y: lastPoint.y }
-                const distance = Math.sqrt((lastPoint.x - secondToLastPoint.x) ** 2 + (lastPoint.y - secondToLastPoint.y) ** 2)
-                const nextX = lastPoint.x === 0 ? 0 : lastPoint.x + distance * factor * Math.cos(Math.atan(slope))
-                const nextY = lastPoint.y + slope * (nextX - lastPoint.x)
-              
-                return { x: nextX, y: nextY }
+                const firstHalf = array.slice(0, endIndex)
+                const secondHalf = array.slice(endIndex - amount, array.length)
+                return secondHalf.concat(...firstHalf)
             }
-            // lateinit neural network. Lateinit because the third step isn't reached right away,
-            // and it's okay to let the browser download brain.js in the background.
-            let net = null
             
             // mob
             mobs.spawn(x, y, 9, radius, "#cc99ff")
             const me = mob[mob.length - 1]
-            me.vertices = Matter.Vertices.rotate(me.vertices, Math.PI, me.position) //make the pointy side of triangle the front
-            Matter.Body.rotate(me, Math.random() * Math.PI * 2)
-            me.radius *= 1.5
             me.tick = 0
-            // position, tick
+            // position, lifeTick, waitTick
             me.fireTargets = []
-            me.pulseRadius = Math.min(200, 130 + simulation.difficulty * 3)
+            me.pulseRadius = Math.min(150, 70 + simulation.difficulty * 3)
             me.fireDelay = Math.max(40, 80 - simulation.difficulty * 2)
             // parallel attacks are possible, and their amount depends on difficulty
             me.waitDelay = me.fireDelay / Math.max(Math.min(~~(simulation.difficulty / 10), 10), 1)
@@ -3459,10 +3441,12 @@ const level = {
             me.damageReduction = 0.25 / (tech.isScaleMobsWithDuplication ? 1 + tech.duplicationChance() : 1)
             // The boss has three modes of operation:
             // 0) Least accurate one -- simple location prediction given velocity. Green color
-            // 1) More accurate one -- extrapolation of the player's history. Orange color
+            // 1) More accurate one -- applies two more points with random height. Orange color
             // 2) Most accurate one -- machine learning of the entire histiry. Red color
             me.operationMode = 0
             me.color = '#43c59e'
+            me.primaryColors = ["#43c59e", "#ff7313", "#650d1b"]
+            me.secondaryColors = ["rgba(68,197,159,0.5)", "rgba(255,114,20,0.5)", "rgba(99,13,27,0.5)"]
 
             me.do = function () {
                 this.seePlayerByLookingAt()
@@ -3471,7 +3455,8 @@ const level = {
                 this.repulsion()
                 
                 this.operationMode = ~~((1 - this.health) * 3)
-                this.color = ["#43c59e", "#ff7313", "#650d1b"][this.operationMode]
+                this.primaryColor = this.primaryColors[this.operationMode]
+                this.secondaryColor = this.secondaryColors[this.operationMode]
                 // cool graphics
                 ctx.beginPath()
                 const first = this.vertices[0]
@@ -3492,7 +3477,7 @@ const level = {
                     ctx.lineTo(target.x, target.y)
                 }
                 ctx.lineWidth = 5 + Math.abs(Math.sin(simulation.cycle / 30)) * 5
-                ctx.strokeStyle = this.color
+                ctx.strokeStyle = this.primaryColor
                 ctx.stroke()
                 ctx.lineWidth = 3
                 ctx.strokeStyle = '#000'
@@ -3501,75 +3486,71 @@ const level = {
                 if (!m.isCloak && !this.isStunned) {
                     let i = this.fireTargets.length
                     while (i--) {
+                        // do not do anything until the target is ready.
+                        const fireTarget = this.fireTargets[i]
+                        if (fireTarget.waitTick > 0) {
+                            fireTarget.waitTick--
+                            continue
+                        }
                         // spin faster for every parallel shot
                         this.torque += 0.000001 * this.inertia
-                        const fireTarget = this.fireTargets[i]
-                        if (fireTarget.tick > this.fireDelay) {
+                        if (fireTarget.lifeTick > this.fireDelay) {
                             // fire, remove target
                             this.isFiring = false
                             this.fireTargets.splice(i, 1)
                             // damage player if in range
                             if (Vector.magnitude(Vector.sub(player.position, fireTarget)) < this.pulseRadius && m.immuneCycle < m.cycle) {
                                 m.immuneCycle = m.cycle + m.collisionImmuneCycles // player is immune to damage
-                                m.damage(0.045 * simulation.dmgScale)
+                                m.damage(0.015 * simulation.dmgScale)
                             }
                             simulation.drawList.push({ //add dmg to draw queue
                                 x: fireTarget.x,
                                 y: fireTarget.y,
                                 radius: this.pulseRadius,
-                                color: "rgba(0, 208, 255, 0.81)",
+                                color: this.secondaryColor,
                                 time: simulation.drawTime
                             })
                         } else {
                             // delay before firing
-                            fireTarget.tick++
+                            fireTarget.lifeTick++
                             // draw explosion outline
                             ctx.beginPath()
                             ctx.arc(fireTarget.x, fireTarget.y, this.pulseRadius, 0, 2 * Math.PI) //* this.fireCycle / this.fireDelay
-                            ctx.fillStyle = "rgba(0, 208, 255, 0.47)"
+                            ctx.fillStyle = this.primaryColor
                             ctx.fill()
                         }
                     }
                     if (this.tick++ > this.waitDelay && this.seePlayer.yes && Math.random() > 0.95 ) {
                         // find targets, using the mode of operation.
                         const historyIndex = m.cycle % 600
-                        let target
-                        if (this.operationMode === 0 || true) {
-                            // simle velocity calculation, easy to predict
-                            // position after the shot will be fired, given gravity
-                            const gravity = Vector.create(0, -simulation.g)
-                            const endPosition = Vector.add(Vector.mult(player.velocity, this.fireDelay), Vector.mult(gravity, this.fireDelay))
-                            // add to the existing position
-                            target = Vector.add(player.position, endPosition)
-                        } else if (this.operationMode === 1) {
-                            // interpolation of recent history
-                            const points = m.history.slice(historyIndex - 59, historyIndex).map(step => step.position)
-                            // console.log(extrapolateNextPoint(points))
-                            // target = extrapolate(points, 59)
-                            target = Vector.clone(m.pos)
+                        let targets = []
+
+                                                    // const points = sliceArray(m.history, historyIndex - (~~(this.fireDelay / 2) - 1), this.fireDelay).map(step => step.velocity)
+                            // dirty and nasty vector average algorithm
+                            // const recentVelocity = Vector.div(points.reduce((one, two) => Vector.add(one, two)), points.length)
+                            // const updatedVelocity = Vector.create(player.velocity.x, player.velocity.y / 10)
+                            // const endPosition = Vector.mult(Vector.add(updatedVelocity, Vector.mult(recentVelocity, 0.5)), this.fireDelay)
+                            // target = Vector.add(player.position, endPosition)
+                        
+                        const updatedVelocity = Vector.create(player.velocity.x, player.velocity.y / 5)
+                        const endPosition = Vector.mult(updatedVelocity, this.fireDelay)
+                        const target1 = Object.assign(Vector.add(player.position, endPosition), { lifeTick: 0, waitTick: 0 })
+
+                        if (this.operationMode === 0) {
+                            // first operation mode simply adds a single target being at player's position after the shot will be fired.
+                            targets.push(target1)
+                        } else if (this.operationMode == 1) {
+                            // second operation mode also adds a position before or after, and one directly on top, and applies a random factor.
+                            const secondPosition = Vector.add(endPosition, Vector.create(200 * (Math.random() > 0.5 ? 1 : -1), Math.random() * 200 - 100))
+                            const thirdPosition = Vector.add(endPosition, Vector.create(0, this.fireDelay * -7))
+                            const target2 = Object.assign(Vector.add(player.position, secondPosition), { lifeTick: 0, waitTick: ~~(this.fireDelay / 3) })
+                            const target3 = Object.assign(Vector.add(player.position, thirdPosition), { lifeTick: 0, waitTick: 0 })
+                            targets.push(target1, target2, target3)
                         } else if (this.operationMode == 2) {
-                            if (net === null) {
-                                // init model
-                                net = new brain.recurrent.LSTMTimeStep({
-                                    inputSize: 2,
-                                    hiddenLayers: [10],
-                                    outputSize: 2,
-                                })
-                                net.train(m.history.map(step => [step.position.x, step.position.y]), { errorThresh: 0.09 })
-                                // delete steps
-                            }
-                            const last = m.history
-                                            .slice(historyIndex - 59 < 0 ? 0 : historyIndex - 59, historyIndex)
-                                            .map(step => [step.position.x, step.position.y])
-                            const next = net.forecast(last, 1)[0]
-                            console.log(last, next)
-                            target = Vector.clone(Vector.create(next[0], next[1]))
+                            // placeholder, for now phase 1 == 3
+                            targets.push(target1)
                         }
-                        this.fireTargets.push({
-                            x: target.x,
-                            y: target.y,
-                            tick: 0
-                        })
+                        this.fireTargets.push(...targets)
                         this.tick = 0
                     }
                 }
