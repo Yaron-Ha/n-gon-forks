@@ -3427,7 +3427,7 @@ const level = {
             me.tick = 0
             // position, lifeTick, waitTick
             me.fireTargets = []
-            me.pulseRadius = Math.min(150, 70 + simulation.difficulty * 3)
+            me.pulseRadius = Math.min(200, 100 + simulation.difficulty * 3)
             me.fireDelay = Math.max(40, 80 - simulation.difficulty * 2)
             // parallel attacks are possible, and their amount depends on difficulty
             me.waitDelay = me.fireDelay / Math.max(Math.min(~~(simulation.difficulty / 10), 10), 1)
