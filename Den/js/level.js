@@ -3403,11 +3403,13 @@ const level = {
         for (let i = 0; i < 40; i++) {
             powerUps.spawn(m.pos.x + 1000, m.pos.y, 'ammo')
         }
-        const aimerBoss = (x, y, radius = 90) => {
+
+        const aimerBoss = (x, y, radius = 90, insane = false) => {
             // utils
             const lerp = (start, end, step) => {
                 return (1 - step) * start + step * end
             }
+
             const sliceArray = (array, endIndex, amount) => {
                 // slices the array from endIndex (disclusive), backwards amount items.
                 // this assumes the total amount to copy isn't larger than the existing amount.
@@ -3420,33 +3422,71 @@ const level = {
                 const secondHalf = array.slice(endIndex - amount, array.length)
                 return secondHalf.concat(...firstHalf)
             }
+
+            const calculateSimilarity = (first, second) => {
+                const THRESHOLD = 50
+            
+                // calculate individual scores based on distance
+                const similarityScores = first.map((vector1, index) => {
+                    const vector2 = second[index]
+                    const distance = Math.sqrt((vector2.x - vector1.x) ** 2 + (vector2.y - vector1.y) ** 2)
+                    return distance <= THRESHOLD ? 1 - distance / THRESHOLD : 0
+                })
+                // sum and return average
+                const sum = similarityScores.reduce((acc, score) => acc + score, 0)
+                return sum / similarityScores.length
+            }
+
+
+            const historyIndex = back => (m.cycle - back) % 600
             
             // mob
-            mobs.spawn(x, y, 9, radius, "#cc99ff")
+            mobs.spawn(x, y, insane ? 10 : 9, radius, insane ? "#8f1fff" : "#cc99ff")
             const me = mob[mob.length - 1]
             me.tick = 0
             // position, lifeTick, waitTick
             me.fireTargets = []
-            me.pulseRadius = Math.min(200, 100 + simulation.difficulty * 3)
-            me.fireDelay = Math.max(40, 80 - simulation.difficulty * 2)
+            me.pulseRadius = Math.min(300, 100 + simulation.difficulty * 3)
+            me.fireDelay = insane ? 30 : 40
             // parallel attacks are possible, and their amount depends on difficulty
-            me.waitDelay = me.fireDelay / Math.max(Math.min(~~(simulation.difficulty / 10), 10), 1)
+            me.waitDelay = 3 * me.fireDelay / Math.max(Math.min(~~(simulation.difficulty / 10), 10), 1)
             Matter.Body.setDensity(me, 0.01) //extra dense //normal is 0.001 //makes effective life much larger
             me.isBoss = true
             me.onDeath = function () {
                 powerUps.spawnBossPowerUp(this.position.x, this.position.y)
             }
-            me.seeAtDistance2 = 1000 ** 2
-            me.onHit = function () { }
-            me.damageReduction = 0.25 / (tech.isScaleMobsWithDuplication ? 1 + tech.duplicationChance() : 1)
+            me.seeAtDistance2 = 1250 ** 2
+            me.onHit = () => {}
+            me.damageReduction = (insane ? 0.1 : 0.2) / (tech.isScaleMobsWithDuplication ? 1 + tech.duplicationChance() : 1)
             // The boss has three modes of operation:
-            // 0) Least accurate one -- simple location prediction given velocity. Green color
-            // 1) More accurate one -- applies two more points with random height. Orange color
-            // 2) Most accurate one -- machine learning of the entire histiry. Red color
+            // 0) -- simple location prediction given velocity. Green color
+            // 1) -- same but more parallel. Orange color
+            // 2) -- applies two more points with random height, more parallel. Red color
             me.operationMode = 0
-            me.color = '#43c59e'
-            me.primaryColors = ["#43c59e", "#ff7313", "#650d1b"]
-            me.secondaryColors = ["rgba(68,197,159,0.5)", "rgba(255,114,20,0.5)", "rgba(99,13,27,0.5)"]
+            me.primaryColors = ["#44c59f99", "#ff721499", "#650d1b99"]
+            me.secondaryColors = ["#44c59f4d", "#ff72144d", "#650d1b4d"]
+
+            me.shake = function() {
+                // shake player
+                if (Vector.magnitudeSquared(Vector.sub(player.position, this.position)) < 4000000) { //2000
+                    player.force.x += 0.065 * player.mass * (player.position.x > this.position.x ? 1 : -1)
+                    player.force.y -= 0.025 * player.mass
+                }
+                // spawn helper bullets
+                const amount = Math.round(Math.min(5, 1 + ~~(simulation.difficulty / 3)) * Math.random())
+                // vertices which are closest to the player are first
+                const goodVertices = [...this.vertices]
+                    .sort((first, second) => Vector.magnitudeSquared(Vector.sub(player.position, first)) - Vector.magnitudeSquared(Vector.sub(player.position, second)))
+                for (let i = 0; i < amount; ++i) {
+                    const next = goodVertices[i]
+                    spawn.sniperBullet(next.x, next.y)
+                    const velocity = Vector.mult(Vector.normalise(Vector.sub(this.position, next)), -10 - ~~(simulation.difficulty / 4))
+                    Matter.Body.setVelocity(mob[mob.length - 1], {
+                        x: velocity.x,
+                        y: velocity.y
+                    })   
+                }
+            }
 
             me.do = function () {
                 this.seePlayerByLookingAt()
@@ -3454,7 +3494,12 @@ const level = {
                 this.attraction()
                 this.repulsion()
                 
-                this.operationMode = ~~((1 - this.health) * 3)
+                // update operation mode and shake
+                const newOperationMode = ~~((1 - this.health) * 3)
+                if (this.operationMode !== newOperationMode) {
+                    this.operationMode = newOperationMode
+                    this.shake()
+                }
                 this.primaryColor = this.primaryColors[this.operationMode]
                 this.secondaryColor = this.secondaryColors[this.operationMode]
                 // cool graphics
@@ -3480,7 +3525,7 @@ const level = {
                 ctx.strokeStyle = this.primaryColor
                 ctx.stroke()
                 ctx.lineWidth = 3
-                ctx.strokeStyle = '#000'
+                ctx.strokeStyle = insane ? '#d00' : '#000'
                 ctx.stroke()
                 
                 if (!m.isCloak && !this.isStunned) {
@@ -3520,36 +3565,44 @@ const level = {
                             ctx.fill()
                         }
                     }
-                    if (this.tick++ > this.waitDelay && this.seePlayer.yes && Math.random() > 0.95 ) {
+                    if (this.tick++ > this.waitDelay / (this.operationMode + 1) && this.seePlayer.yes && Math.random() > 0.95 ) {
                         // find targets, using the mode of operation.
-                        const historyIndex = m.cycle % 600
-                        let targets = []
-
-                                                    // const points = sliceArray(m.history, historyIndex - (~~(this.fireDelay / 2) - 1), this.fireDelay).map(step => step.velocity)
-                            // dirty and nasty vector average algorithm
-                            // const recentVelocity = Vector.div(points.reduce((one, two) => Vector.add(one, two)), points.length)
-                            // const updatedVelocity = Vector.create(player.velocity.x, player.velocity.y / 10)
-                            // const endPosition = Vector.mult(Vector.add(updatedVelocity, Vector.mult(recentVelocity, 0.5)), this.fireDelay)
-                            // target = Vector.add(player.position, endPosition)
-                        
+                        const targets = []
                         const updatedVelocity = Vector.create(player.velocity.x, player.velocity.y / 5)
                         const endPosition = Vector.mult(updatedVelocity, this.fireDelay)
                         const target1 = Object.assign(Vector.add(player.position, endPosition), { lifeTick: 0, waitTick: 0 })
+                        // add the basic target
+                        targets.push(target1)
 
-                        if (this.operationMode === 0) {
-                            // first operation mode simply adds a single target being at player's position after the shot will be fired.
-                            targets.push(target1)
-                        } else if (this.operationMode == 1) {
-                            // second operation mode also adds a position before or after, and one directly on top, and applies a random factor.
+                        // operation modes >=1 add an anti cheese helper spawn
+                        if (this.operationMode >= 1) {
+                            // how similar is it to past movements?
+                            const time = 60
+                            const newPast = sliceArray(m.history,historyIndex(0), time)
+                            const oldPast = sliceArray(m.history, historyIndex(time), time)
+                            const similarityFactor = calculateSimilarity(
+                                newPast
+                                    .map(it => it.velocity),
+                                oldPast
+                                    .map(it => it.velocity)
+                            )
+                            // if you stay predictable, then you get shaken and slightly shot at. Lolz
+                            if (similarityFactor > 0.65) {
+                                simulation.makeTextLog(`Stop being so predictable! I calculated that the change in your moves
+                                sums down to a mere ${((1 - similarityFactor) * 100).toFixed(2)}% different than last time I checked... This should shake you up!`)
+                                this.shake()
+                            }
+                        }
+
+                        // operation mode 2 adds more targets!
+                        if (this.operationMode === 2) {
                             const secondPosition = Vector.add(endPosition, Vector.create(200 * (Math.random() > 0.5 ? 1 : -1), Math.random() * 200 - 100))
                             const thirdPosition = Vector.add(endPosition, Vector.create(0, this.fireDelay * -7))
                             const target2 = Object.assign(Vector.add(player.position, secondPosition), { lifeTick: 0, waitTick: ~~(this.fireDelay / 3) })
                             const target3 = Object.assign(Vector.add(player.position, thirdPosition), { lifeTick: 0, waitTick: 0 })
                             targets.push(target1, target2, target3)
-                        } else if (this.operationMode == 2) {
-                            // placeholder, for now phase 1 == 3
-                            targets.push(target1)
                         }
+                        
                         this.fireTargets.push(...targets)
                         this.tick = 0
                     }
